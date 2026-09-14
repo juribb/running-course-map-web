@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>러닝 코스 추천 - 출발 지점 설정</title>
+<style>
+  html, body, #map { width: 100%; height: 100%; margin: 0; padding: 0; }
+  /* 카카오맵 저작권 표기는 SDK가 자동으로 지도 안에 넣어준다 — 따로 지울 수 없고, 지우면 이용 약관 위반이다 */
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<!--
+  이 페이지는 React Native 앱의 WebView 안에서만 쓰인다.
+  React Native <-> 이 페이지 통신 프로토콜:
+
+  [RN -> 웹] postMessage로 JSON 문자열 전달:
+    {"type": "SET_CENTER", "lat": 37.5665, "lng": 126.9780}
+    받으면 지도 중심과 마커 위치를 그 좌표로 옮긴다 (최초 GPS 위치 전달용).
+
+  [웹 -> RN] window.ReactNativeWebView.postMessage로 JSON 문자열 전달:
+    {"type": "LOCATION_SELECTED", "lat": ..., "lng": ...}
+    지도를 탭하거나 마커를 드래그해서 위치를 확정할 때마다 보낸다.
+    {"type": "READY"}
+    카카오맵 SDK 로딩이 끝나고 지도가 뜬 직후 한 번 보낸다
+    (RN이 이 신호를 받은 뒤에 SET_CENTER를 보내야 안전하다).
+-->
+<script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=df14390194d7de08cee14f4e5898fbd2&autoload=false"></script>
+<script>
+  function postToApp(payload) {
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+    }
+  }
+
+  kakao.maps.load(function () {
+    // 기본값: 서울시청. RN이 SET_CENTER를 보내주면 바로 옮겨진다.
+    var defaultCenter = new kakao.maps.LatLng(37.5665, 126.9780);
+
+    var map = new kakao.maps.Map(document.getElementById('map'), {
+      center: defaultCenter,
+      level: 4,
+    });
+
+    var marker = new kakao.maps.Marker({
+      position: defaultCenter,
+      map: map,
+      draggable: true,
+    });
+
+    function selectLocation(latLng) {
+      marker.setPosition(latLng);
+      postToApp({ type: 'LOCATION_SELECTED', lat: latLng.getLat(), lng: latLng.getLng() });
+    }
+
+    // 마커를 직접 드래그해서 위치를 옮길 수 있다.
+    kakao.maps.event.addListener(marker, 'dragend', function () {
+      var pos = marker.getPosition();
+      postToApp({ type: 'LOCATION_SELECTED', lat: pos.getLat(), lng: pos.getLng() });
+    });
+
+    // 지도를 탭하면 그 자리로 마커가 이동한다.
+    kakao.maps.event.addListener(map, 'click', function (mouseEvent) {
+      selectLocation(mouseEvent.latLng);
+    });
+
+    function handleMessageFromApp(event) {
+      var data;
+      try {
+        data = JSON.parse(event.data);
+      } catch (e) {
+        return;
+      }
+      if (data.type === 'SET_CENTER' && typeof data.lat === 'number' && typeof data.lng === 'number') {
+        var latLng = new kakao.maps.LatLng(data.lat, data.lng);
+        map.setCenter(latLng);
+        marker.setPosition(latLng);
+      }
+    }
+
+    // iOS는 window로, Android는 document로 메시지를 쏜다 — 둘 다 등록해야 한다.
+    window.addEventListener('message', handleMessageFromApp);
+    document.addEventListener('message', handleMessageFromApp);
+
+    postToApp({ type: 'READY' });
+  });
+</script>
+</body>
+</html>
