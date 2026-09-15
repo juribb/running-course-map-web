@@ -68,7 +68,7 @@
     var SLOPE_STEP_METERS = 20;
     var SLOPE_UP_PERCENT = 3;
     var SLOPE_DOWN_PERCENT = -3;
-    var SLOPE_COLORS = { up: '#D9822B', flat: '#0D6434', down: '#2E86DE' };
+    var SLOPE_COLORS = { up: '#BA1A1A', flat: '#0D6434', down: '#2E86DE' };
 
     function haversineMeters(lat1, lng1, lat2, lng2) {
       var R = 6371000;
@@ -151,7 +151,7 @@
         var path = points.map(function (c) { return new kakao.maps.LatLng(c[1], c[0]); });
         var polyline = new kakao.maps.Polyline({
           path: path,
-          strokeWeight: 2,
+          strokeWeight: 3,
           strokeColor: SLOPE_COLORS[bucket] || SLOPE_COLORS.flat,
           strokeOpacity: 0.9,
           strokeStyle: 'solid',
