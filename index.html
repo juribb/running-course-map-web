@@ -25,6 +25,9 @@
     {"type": "DRAW_ROUTE", "coordinates": [[lng, lat, elevation], [lng, lat, elevation], ...]}
     받으면 그 좌표들을 이어 실제 경로를 그리고, 전체가 보이도록 지도를 맞춘다 (route 모드에서 씀).
     고도(elevation, 3번째 값)로 구간별 경사를 계산해서 오르막/평지/내리막을 다른 색으로 그린다.
+    {"type": "UPDATE_POSITION", "lat": ..., "lng": ...}
+    받으면 현재 위치 마커를 그 자리로 옮기고, 지금까지 이동한 경로를 파란 선으로 이어 그린다
+    (러닝 실행 화면에서 GPS 갱신마다 계속 보낸다).
 
   [이 페이지 -> RN/웹] postMessage로 JSON 문자열 전달:
     {"type": "LOCATION_SELECTED", "lat": ..., "lng": ...}
@@ -63,6 +66,9 @@
     var marker = null;
     var routePolylines = [];
     var routeMarkers = [];
+    var currentPositionMarker = null;
+    var actualPathPoints = [];
+    var actualPathPolyline = null;
 
     // 오르막/평지/내리막 판정 기준. RN 앱(CourseRouteMap.tsx)의 SLOPE_LEGEND 색상과 맞춰야 한다.
     var SLOPE_STEP_METERS = 20;
@@ -190,6 +196,43 @@
       map.setBounds(bounds);
     }
 
+    // 러닝 실행 중 현재 위치 마커를 옮기고, 지금까지 이동한 경로를 이어 그린다.
+    function updatePosition(lat, lng) {
+      var latLng = new kakao.maps.LatLng(lat, lng);
+
+      if (!currentPositionMarker) {
+        currentPositionMarker = new kakao.maps.Marker({
+          position: latLng,
+          map: map,
+          zIndex: 10,
+          image: new kakao.maps.MarkerImage(
+            'data:image/svg+xml;base64,' +
+              btoa(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><circle cx="12" cy="12" r="8" fill="#1A73E8" stroke="#ffffff" stroke-width="3"/></svg>',
+              ),
+            new kakao.maps.Size(24, 24),
+          ),
+        });
+      } else {
+        currentPositionMarker.setPosition(latLng);
+      }
+
+      actualPathPoints.push(latLng);
+      if (actualPathPolyline) actualPathPolyline.setMap(null);
+      if (actualPathPoints.length >= 2) {
+        actualPathPolyline = new kakao.maps.Polyline({
+          path: actualPathPoints,
+          strokeWeight: 4,
+          strokeColor: '#1A73E8',
+          strokeOpacity: 0.95,
+          strokeStyle: 'solid',
+        });
+        actualPathPolyline.setMap(map);
+      }
+
+      map.panTo(latLng);
+    }
+
     function handleMessageFromApp(event) {
       var data;
       try {
@@ -203,6 +246,8 @@
         if (marker) marker.setPosition(latLng);
       } else if (data.type === 'DRAW_ROUTE') {
         drawRoute(data.coordinates);
+      } else if (data.type === 'UPDATE_POSITION' && typeof data.lat === 'number' && typeof data.lng === 'number') {
+        updatePosition(data.lat, data.lng);
       }
     }
 
