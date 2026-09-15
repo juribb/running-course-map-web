@@ -22,8 +22,9 @@
   [RN/웹 -> 이 페이지] postMessage로 JSON 문자열 전달:
     {"type": "SET_CENTER", "lat": 37.5665, "lng": 126.9780}
     받으면 지도 중심과 마커 위치를 그 좌표로 옮긴다 (최초 GPS 위치 전달용, 기본 모드에서만 씀).
-    {"type": "DRAW_ROUTE", "coordinates": [[lng, lat], [lng, lat], ...]}
+    {"type": "DRAW_ROUTE", "coordinates": [[lng, lat, elevation], [lng, lat, elevation], ...]}
     받으면 그 좌표들을 이어 실제 경로를 그리고, 전체가 보이도록 지도를 맞춘다 (route 모드에서 씀).
+    고도(elevation, 3번째 값)로 구간별 경사를 계산해서 오르막/평지/내리막을 다른 색으로 그린다.
 
   [이 페이지 -> RN/웹] postMessage로 JSON 문자열 전달:
     {"type": "LOCATION_SELECTED", "lat": ..., "lng": ...}
@@ -60,8 +61,55 @@
     });
 
     var marker = null;
-    var routePolyline = null;
+    var routePolylines = [];
     var routeMarkers = [];
+
+    // 오르막/평지/내리막 판정 기준. RN 앱(CourseRouteMap.tsx)의 SLOPE_LEGEND 색상과 맞춰야 한다.
+    var SLOPE_STEP_METERS = 20;
+    var SLOPE_UP_PERCENT = 3;
+    var SLOPE_DOWN_PERCENT = -3;
+    var SLOPE_COLORS = { up: '#D9822B', flat: '#0D6434', down: '#2E86DE' };
+
+    function haversineMeters(lat1, lng1, lat2, lng2) {
+      var R = 6371000;
+      var toRad = function (d) { return (d * Math.PI) / 180; };
+      var dLat = toRad(lat2 - lat1);
+      var dLng = toRad(lng2 - lng1);
+      var a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    // 원본 좌표는 너무 촘촘해서 그대로 경사를 재면 고도 데이터 노이즈에 휘둘리니,
+    // stepMeters 간격으로 리샘플링한 뒤 그 구간들끼리 경사를 비교한다.
+    function resampleWithElevation(coords, stepMeters) {
+      if (coords.length === 0) return [];
+      var samples = [coords[0]];
+      var accumulated = 0;
+      for (var i = 1; i < coords.length; i++) {
+        var prev = coords[i - 1];
+        var curr = coords[i];
+        accumulated += haversineMeters(prev[1], prev[0], curr[1], curr[0]);
+        if (accumulated >= stepMeters) {
+          samples.push(curr);
+          accumulated = 0;
+        }
+      }
+      var last = coords[coords.length - 1];
+      if (samples[samples.length - 1] !== last) samples.push(last);
+      return samples;
+    }
+
+    function slopeBucket(prev, curr) {
+      var dist = haversineMeters(prev[1], prev[0], curr[1], curr[0]);
+      if (dist < 1) return 'flat';
+      var elevDelta = (curr[2] || 0) - (prev[2] || 0);
+      var grade = (elevDelta / dist) * 100;
+      if (grade >= SLOPE_UP_PERCENT) return 'up';
+      if (grade <= SLOPE_DOWN_PERCENT) return 'down';
+      return 'flat';
+    }
 
     if (!isRouteMode) {
       marker = new kakao.maps.Marker({
@@ -88,31 +136,57 @@
     }
 
     function drawRoute(coordinates) {
-      if (routePolyline) routePolyline.setMap(null);
+      routePolylines.forEach(function (p) { p.setMap(null); });
+      routePolylines = [];
       routeMarkers.forEach(function (m) { m.setMap(null); });
       routeMarkers = [];
 
       if (!Array.isArray(coordinates) || coordinates.length === 0) return;
 
-      // coordinates는 [lng, lat] 순서(GeoJSON 관례)로 온다 — 카카오맵은 (lat, lng) 순서를 쓴다.
-      var path = coordinates.map(function (c) {
-        return new kakao.maps.LatLng(c[1], c[0]);
-      });
+      // coordinates는 [lng, lat, elevation] 순서(GeoJSON 관례)로 온다 — 카카오맵은 (lat, lng) 순서를 쓴다.
+      var samples = resampleWithElevation(coordinates, SLOPE_STEP_METERS);
 
-      routePolyline = new kakao.maps.Polyline({
-        path: path,
-        strokeWeight: 2,
-        strokeColor: '#0D6434',
-        strokeOpacity: 0.9,
-        strokeStyle: 'solid',
-      });
-      routePolyline.setMap(map);
+      function flushSegment(points, bucket) {
+        if (points.length < 2) return;
+        var path = points.map(function (c) { return new kakao.maps.LatLng(c[1], c[0]); });
+        var polyline = new kakao.maps.Polyline({
+          path: path,
+          strokeWeight: 2,
+          strokeColor: SLOPE_COLORS[bucket] || SLOPE_COLORS.flat,
+          strokeOpacity: 0.9,
+          strokeStyle: 'solid',
+        });
+        polyline.setMap(map);
+        routePolylines.push(polyline);
+      }
 
-      var startMarker = new kakao.maps.Marker({ position: path[0], map: map });
+      if (samples.length < 2) {
+        flushSegment(samples, 'flat');
+      } else {
+        var currentBucket = slopeBucket(samples[0], samples[1]);
+        var currentPoints = [samples[0]];
+        for (var i = 1; i < samples.length; i++) {
+          var bucket = slopeBucket(samples[i - 1], samples[i]);
+          if (bucket !== currentBucket) {
+            currentPoints.push(samples[i]); // 색이 바뀌는 지점을 공유해서 선이 끊어져 보이지 않게 한다
+            flushSegment(currentPoints, currentBucket);
+            currentPoints = [samples[i]];
+            currentBucket = bucket;
+          } else {
+            currentPoints.push(samples[i]);
+          }
+        }
+        flushSegment(currentPoints, currentBucket);
+      }
+
+      var startMarker = new kakao.maps.Marker({
+        position: new kakao.maps.LatLng(coordinates[0][1], coordinates[0][0]),
+        map: map,
+      });
       routeMarkers.push(startMarker);
 
       var bounds = new kakao.maps.LatLngBounds();
-      path.forEach(function (p) { bounds.extend(p); });
+      coordinates.forEach(function (c) { bounds.extend(new kakao.maps.LatLng(c[1], c[0])); });
       map.setBounds(bounds);
     }
 
